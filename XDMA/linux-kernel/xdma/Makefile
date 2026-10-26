@@ -28,6 +28,8 @@ ifneq ($(config_bar_num),)
 	EXTRA_CFLAGS += -DXDMA_CONFIG_BAR_NUM=$(config_bar_num)
 endif
 #EXTRA_CFLAGS += -DINTERNAL_TESTING
+# kbuild dropped EXTRA_CFLAGS; ccflags-y works on old and new kernels
+ccflags-y += $(EXTRA_CFLAGS)
 
 ifneq ($(KERNELRELEASE),)
 	$(TARGET_MODULE)-objs := libxdma.o xdma_cdev.o cdev_ctrl.o cdev_events.o cdev_sgdma.o cdev_xvc.o cdev_bypass.o xdma_mod.o xdma_thread.o

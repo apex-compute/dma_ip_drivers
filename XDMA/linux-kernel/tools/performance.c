@@ -57,10 +57,10 @@ static void usage(const char* name)
 static uint32_t getopt_integer(char *optarg)
 {
   int rc;
-  uint32_t value;
+  uint32_t value = 0;
   rc = sscanf(optarg, "0x%x", &value);
   if (rc <= 0)
-    rc = sscanf(optarg, "%ul", &value);
+    rc = sscanf(optarg, "%u", &value);
   //printf("sscanf() = %d, value = 0x%08x\n", rc, (unsigned int)value);
   return value;
 }
@@ -171,4 +171,5 @@ int test_dma(char *device_name, int size, int count)
   printf("perf.pending_count = %lld\n", (long long)perf.pending_count);
 
   close(fd);
+  return rc;
 }

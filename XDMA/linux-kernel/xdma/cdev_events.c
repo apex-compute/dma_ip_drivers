@@ -69,33 +69,43 @@ static ssize_t char_events_read(struct file *file, char __user *buf,
 
 	rv = copy_to_user(buf, &events_user, 4);
 	if (rv)
-		dbg_sg("Copy to user failed but continuing\n");
+		return -EFAULT;
 
 	return 4;
 }
 
-static unsigned int char_events_poll(struct file *file, poll_table *wait)
+#if KERNEL_VERSION(4, 16, 0) <= LINUX_VERSION_CODE
+#define xdma_poll_t		__poll_t
+#define XDMA_POLL_READABLE	(EPOLLIN | EPOLLRDNORM)
+#define XDMA_POLL_ERR		EPOLLERR
+#else
+#define xdma_poll_t		unsigned int
+#define XDMA_POLL_READABLE	(POLLIN | POLLRDNORM)
+#define XDMA_POLL_ERR		POLLERR
+#endif
+
+static xdma_poll_t char_events_poll(struct file *file, poll_table *wait)
 {
 	struct xdma_user_irq *user_irq;
 	struct xdma_cdev *xcdev = (struct xdma_cdev *)file->private_data;
 	unsigned long flags;
-	unsigned int mask = 0;
+	xdma_poll_t mask = 0;
 	int rv;
 
 	rv = xcdev_check(__func__, xcdev, 0);
 	if (rv < 0)
-		return rv;
+		return XDMA_POLL_ERR;
 	user_irq = xcdev->user_irq;
 	if (!user_irq) {
 		pr_info("xcdev 0x%p, user_irq NULL.\n", xcdev);
-		return -EINVAL;
+		return XDMA_POLL_ERR;
 	}
 
 	poll_wait(file, &user_irq->events_wq,  wait);
 
 	spin_lock_irqsave(&user_irq->events_lock, flags);
 	if (user_irq->events_irq)
-		mask = POLLIN | POLLRDNORM;	/* readable */
+		mask = XDMA_POLL_READABLE;	/* readable */
 
 	spin_unlock_irqrestore(&user_irq->events_lock, flags);
 

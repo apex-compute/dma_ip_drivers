@@ -235,8 +235,9 @@ static int create_sys_device(struct xdma_cdev *xcdev, enum cdev_type type)
 		xcdev->cdevno, NULL, devnode_names[type], xdev->idx,
 		last_param);
 
-	if (!xcdev->sys_device) {
+	if (IS_ERR_OR_NULL(xcdev->sys_device)) {
 		pr_err("device_create(%s) failed\n", devnode_names[type]);
+		xcdev->sys_device = NULL;
 		return -1;
 	}
 
@@ -405,6 +406,7 @@ void xpdev_destroy_interfaces(struct xdma_pci_dev *xpdev)
 				pr_err("Failed to destroy c2h xcdev %d error 0x%x\n",
 						i, rv);
 		}
+		xcdev_flag_clear(xpdev, XDF_CDEV_SG);
 	}
 
 	if (xpdev_flag_test(xpdev, XDF_CDEV_EVENT)) {
@@ -414,6 +416,7 @@ void xpdev_destroy_interfaces(struct xdma_pci_dev *xpdev)
 				pr_err("Failed to destroy cdev event %d error 0x%x\n",
 					i, rv);
 		}
+		xcdev_flag_clear(xpdev, XDF_CDEV_EVENT);
 	}
 
 	/* remove control character device */
@@ -422,6 +425,7 @@ void xpdev_destroy_interfaces(struct xdma_pci_dev *xpdev)
 		if (rv < 0)
 			pr_err("Failed to destroy cdev ctrl event %d error 0x%x\n",
 				i, rv);
+		xcdev_flag_clear(xpdev, XDF_CDEV_CTRL);
 	}
 
 	/* remove user character device */
@@ -430,6 +434,7 @@ void xpdev_destroy_interfaces(struct xdma_pci_dev *xpdev)
 		if (rv < 0)
 			pr_err("Failed to destroy user cdev %d error 0x%x\n",
 				i, rv);
+		xcdev_flag_clear(xpdev, XDF_CDEV_USER);
 	}
 
 	if (xpdev_flag_test(xpdev, XDF_CDEV_XVC)) {
@@ -437,6 +442,7 @@ void xpdev_destroy_interfaces(struct xdma_pci_dev *xpdev)
 		if (rv < 0)
 			pr_err("Failed to destroy xvc cdev %d error 0x%x\n",
 				i, rv);
+		xcdev_flag_clear(xpdev, XDF_CDEV_XVC);
 	}
 
 	if (xpdev_flag_test(xpdev, XDF_CDEV_BYPASS)) {
@@ -457,12 +463,15 @@ void xpdev_destroy_interfaces(struct xdma_pci_dev *xpdev)
 		rv = destroy_xcdev(&xpdev->bypass_cdev_base);
 		if (rv < 0)
 			pr_err("Failed to destroy base cdev\n");
+		xcdev_flag_clear(xpdev, XDF_CDEV_BYPASS);
 	}
 
-	if (xpdev->major)
+	if (xpdev->major) {
 		unregister_chrdev_region(
 				MKDEV(xpdev->major, XDMA_MINOR_BASE),
 				XDMA_MINOR_COUNT);
+		xpdev->major = 0;
+	}
 }
 
 int xpdev_create_interfaces(struct xdma_pci_dev *xpdev)
@@ -482,6 +491,8 @@ int xpdev_create_interfaces(struct xdma_pci_dev *xpdev)
 	xpdev_flag_set(xpdev, XDF_CDEV_CTRL);
 
 	/* initialize events character device */
+	/* flag first, so a partially created set is torn down on failure */
+	xpdev_flag_set(xpdev, XDF_CDEV_EVENT);
 	for (i = 0; i < xpdev->user_max; i++) {
 		rv = create_xcdev(xpdev, &xpdev->events_cdev[i], i, NULL,
 			CHAR_EVENTS);
@@ -490,9 +501,9 @@ int xpdev_create_interfaces(struct xdma_pci_dev *xpdev)
 			goto fail;
 		}
 	}
-	xpdev_flag_set(xpdev, XDF_CDEV_EVENT);
 
 	/* iterate over channels */
+	xpdev_flag_set(xpdev, XDF_CDEV_SG);
 	for (i = 0; i < xpdev->h2c_channel_max; i++) {
 		engine = &xdev->engine_h2c[i];
 
@@ -520,10 +531,10 @@ int xpdev_create_interfaces(struct xdma_pci_dev *xpdev)
 			goto fail;
 		}
 	}
-	xpdev_flag_set(xpdev, XDF_CDEV_SG);
 
 	/* Initialize Bypass Character Device */
 	if (xdev->bypass_bar_idx > 0) {
+		xpdev_flag_set(xpdev, XDF_CDEV_BYPASS);
 		for (i = 0; i < xpdev->h2c_channel_max; i++) {
 			engine = &xdev->engine_h2c[i];
 
@@ -560,7 +571,6 @@ int xpdev_create_interfaces(struct xdma_pci_dev *xpdev)
 			pr_err("create bypass failed %d.\n", rv);
 			goto fail;
 		}
-		xpdev_flag_set(xpdev, XDF_CDEV_BYPASS);
 	}
 
 	/* initialize user character device */
@@ -626,6 +636,8 @@ int xdma_cdev_init(void)
 
 	if (!cdev_cache) {
 		pr_info("memory allocation for cdev_cache failed. OOM\n");
+		class_destroy(g_xdma_class);
+		g_xdma_class = NULL;
 		return -ENOMEM;
 	}
 

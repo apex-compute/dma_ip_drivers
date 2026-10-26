@@ -50,12 +50,23 @@ static int xdma_thread_cmpl_status_proc(struct list_head *work_item)
 {
 	struct xdma_engine *engine;
 	struct xdma_transfer * transfer;
+	unsigned long flags;
+	u32 desc_cmpl_th;
 
 	engine = list_entry(work_item, struct xdma_engine, cmplthp_list);
+
+	/* the list may have drained, or its head completed, meanwhile */
+	spin_lock_irqsave(&engine->lock, flags);
+	if (list_empty(&engine->transfer_list)) {
+		spin_unlock_irqrestore(&engine->lock, flags);
+		return 0;
+	}
 	transfer = list_entry(engine->transfer_list.next, struct xdma_transfer,
 			entry);
-	if (transfer)
-		engine_service_poll(engine, transfer->desc_cmpl_th);
+	desc_cmpl_th = transfer->desc_cmpl_th;
+	spin_unlock_irqrestore(&engine->lock, flags);
+
+	engine_service_poll(engine, desc_cmpl_th);
 	return 0;
 }
 
@@ -315,6 +326,9 @@ int xdma_threads_create(unsigned int num_threads)
 	return 0;
 
 cleanup_threads:
+	/* stop the threads already started before freeing their state */
+	for (thp = cs_threads; thread_cnt; thread_cnt--, thp++)
+		xdma_kthread_stop(thp);
 	kfree(cs_threads);
 	cs_threads = NULL;
 	thread_cnt = 0;

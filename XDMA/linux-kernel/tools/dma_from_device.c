@@ -232,6 +232,7 @@ static int test_dma(char *devname, uint64_t addr, uint64_t aperture,
 		if (aperture) {
 			struct xdma_aperture_ioctl io;
 
+			memset(&io, 0, sizeof(io));
 			io.buffer = (unsigned long)buffer;
 			io.len = size;
 			io.ep_addr = addr;

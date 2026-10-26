@@ -23,37 +23,37 @@
 
 #define write_register(v, mem, off) iowrite32(v, mem)
 
-static int copy_desc_data(struct xdma_transfer *transfer, char __user *buf,
+static int copy_desc_data(struct xdma_transfer *transfer, u8 *buf,
 		size_t *buf_offset, size_t buf_size)
 {
 	int i;
-	int copy_err;
 	int rc = 0;
 
 	if (!buf) {
-		pr_err("Invalid user buffer\n");
+		pr_err("Invalid buffer\n");
 		return -EINVAL;
 	}
 
 	if (!buf_offset) {
-		pr_err("Invalid user buffer offset\n");
+		pr_err("Invalid buffer offset\n");
 		return -EINVAL;
 	}
 
-	/* Fill user buffer with descriptor data */
+	/*
+	 * Fill buffer with descriptor data as CPU-native 32-bit words,
+	 * the same format char_bypass_write() takes.
+	 */
 	for (i = 0; i < transfer->desc_num; i++) {
 		if (*buf_offset + sizeof(struct xdma_desc) <= buf_size) {
-			copy_err = copy_to_user(&buf[*buf_offset],
-				transfer->desc_virt + i,
-				sizeof(struct xdma_desc));
+			__le32 *src = (__le32 *)(transfer->desc_virt + i);
+			u32 words[sizeof(struct xdma_desc) / sizeof(u32)];
+			int j;
 
-			if (copy_err) {
-				dbg_sg("Copy to user buffer failed\n");
-				*buf_offset = buf_size;
-				rc = -EINVAL;
-			} else {
-				*buf_offset += sizeof(struct xdma_desc);
-			}
+			for (j = 0; j < ARRAY_SIZE(words); j++)
+				words[j] = le32_to_cpu(src[j]);
+
+			memcpy(&buf[*buf_offset], words, sizeof(words));
+			*buf_offset += sizeof(struct xdma_desc);
 		} else {
 			rc = -ENOMEM;
 		}
@@ -71,6 +71,8 @@ static ssize_t char_bypass_read(struct file *file, char __user *buf,
 	struct xdma_transfer *transfer;
 	struct list_head *idx;
 	size_t buf_offset = 0;
+	size_t buf_size;
+	u8 *kbuf;
 	int rc = 0;
 
 	rc = xcdev_check(__func__, xcdev, 1);
@@ -96,17 +98,35 @@ static ssize_t char_bypass_read(struct file *file, char __user *buf,
 		return -ENODEV;
 	}
 
+	/*
+	 * Queued transfers all live in the engine descriptor ring, so the
+	 * ring size bounds what can be returned. Stage the data in a kernel
+	 * buffer: copy_to_user() may sleep and must not be under the lock.
+	 */
+	buf_size = min_t(size_t, count,
+			 engine->desc_max * sizeof(struct xdma_desc));
+	kbuf = kmalloc(buf_size, GFP_KERNEL);
+	if (!kbuf)
+		return -ENOMEM;
+
 	spin_lock(&engine->lock);
 
 	if (!list_empty(&engine->transfer_list)) {
 		list_for_each(idx, &engine->transfer_list) {
 			transfer = list_entry(idx, struct xdma_transfer, entry);
 
-			rc = copy_desc_data(transfer, buf, &buf_offset, count);
+			rc = copy_desc_data(transfer, kbuf, &buf_offset,
+					    buf_size);
 		}
 	}
 
 	spin_unlock(&engine->lock);
+
+	if (rc >= 0 && copy_to_user(buf, kbuf, buf_offset)) {
+		dbg_sg("Copy to user buffer failed\n");
+		rc = -EFAULT;
+	}
+	kfree(kbuf);
 
 	if (rc < 0)
 		return rc;
@@ -121,7 +141,7 @@ static ssize_t char_bypass_write(struct file *file, const char __user *buf,
 	struct xdma_engine *engine;
 	struct xdma_cdev *xcdev = (struct xdma_cdev *)file->private_data;
 
-	u32 desc_data;
+	u32 desc_data[64];	/* a multiple of whole descriptors */
 	void __iomem *bypass_addr;
 	size_t buf_offset = 0;
 	int rc = 0;
@@ -150,30 +170,33 @@ static ssize_t char_bypass_write(struct file *file, const char __user *buf,
 
 	dbg_sg("In %s()\n", __func__);
 
-	spin_lock(&engine->lock);
-
 	/* Write descriptor data to the bypass BAR */
 	bypass_addr = xdev->bar[xdev->bypass_bar_idx];
 	bypass_addr = (void __iomem *)(
 			(u32 __iomem *)bypass_addr + engine->bypass_offset
 			);
 	while (buf_offset < count) {
-		copy_err = copy_from_user(&desc_data, &buf[buf_offset],
-			sizeof(u32));
-		if (!copy_err) {
-			write_register(desc_data, bypass_addr,
-					bypass_addr - engine->bypass_offset);
-			buf_offset += sizeof(u32);
-			rc = buf_offset;
-		} else {
+		size_t len = min_t(size_t, count - buf_offset,
+				   sizeof(desc_data));
+		size_t i;
+
+		/* copy_from_user() may sleep, so not under the spinlock */
+		copy_err = copy_from_user(desc_data, &buf[buf_offset], len);
+		if (copy_err) {
 			dbg_sg("Error reading data from userspace buffer\n");
-			rc = -EINVAL;
+			rc = -EFAULT;
 			break;
 		}
+
+		spin_lock(&engine->lock);
+		for (i = 0; i < len / sizeof(u32); i++)
+			write_register(desc_data[i], bypass_addr,
+					bypass_addr - engine->bypass_offset);
+		spin_unlock(&engine->lock);
+
+		buf_offset += len;
+		rc = buf_offset;
 	}
-
-	spin_unlock(&engine->lock);
-
 
 	return rc;
 }

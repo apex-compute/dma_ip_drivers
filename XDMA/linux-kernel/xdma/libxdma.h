@@ -100,6 +100,7 @@
 /* maximum size of a single DMA transfer descriptor */
 #define XDMA_DESC_BLEN_BITS	28
 #define XDMA_DESC_BLEN_MAX	((1 << (XDMA_DESC_BLEN_BITS)) - 1)
+extern unsigned int desc_blen_max;	/* module parameter, libxdma.c */
 
 /* bits of the SG DMA control register */
 #define XDMA_CTRL_RUN_STOP			(1UL << 0)
@@ -393,7 +394,7 @@ struct sgdma_common_regs {
 
 /* Structure for polled mode descriptor writeback */
 struct xdma_poll_wb {
-	u32 completed_desc_count;
+	__le32 completed_desc_count;
 	u32 reserved_1[7];
 } __packed;
 
@@ -405,29 +406,30 @@ struct xdma_poll_wb {
  * extra adjacent number gives the amount of extra contiguous descriptors.
  *
  * The descriptors are in root complex memory, and the bytes in the 32-bit
- * words must be in little-endian byte ordering.
+ * words must be in little-endian byte ordering. Every access goes through
+ * cpu_to_le32()/le32_to_cpu() so the driver also works on big-endian hosts.
  */
 struct xdma_desc {
-	u32 control;
-	u32 bytes;		/* transfer length in bytes */
-	u32 src_addr_lo;	/* source address (low 32-bit) */
-	u32 src_addr_hi;	/* source address (high 32-bit) */
-	u32 dst_addr_lo;	/* destination address (low 32-bit) */
-	u32 dst_addr_hi;	/* destination address (high 32-bit) */
+	__le32 control;
+	__le32 bytes;		/* transfer length in bytes */
+	__le32 src_addr_lo;	/* source address (low 32-bit) */
+	__le32 src_addr_hi;	/* source address (high 32-bit) */
+	__le32 dst_addr_lo;	/* destination address (low 32-bit) */
+	__le32 dst_addr_hi;	/* destination address (high 32-bit) */
 	/*
 	 * next descriptor in the single-linked list of descriptors;
 	 * this is the PCIe (bus) address of the next descriptor in the
 	 * root complex memory
 	 */
-	u32 next_lo;		/* next desc address (low 32-bit) */
-	u32 next_hi;		/* next desc address (high 32-bit) */
+	__le32 next_lo;		/* next desc address (low 32-bit) */
+	__le32 next_hi;		/* next desc address (high 32-bit) */
 } __packed;
 
 /* 32 bytes (four 32-bit words) or 64 bytes (eight 32-bit words) */
 struct xdma_result {
-	u32 status;
-	u32 length;
-	u32 reserved_1[6];	/* padding */
+	__le32 status;
+	__le32 length;
+	__le32 reserved_1[6];	/* padding */
 } __packed;
 
 struct sw_desc {
@@ -498,8 +500,8 @@ struct xdma_engine {
 	int version;		/* version of this engine */
 
 	/* HW register address offsets */
-	struct engine_regs *regs;		/* Control reg BAR offset */
-	struct engine_sgdma_regs *sgdma_regs;	/* SGDAM reg BAR offset */
+	struct engine_regs __iomem *regs;	/* Control reg BAR offset */
+	struct engine_sgdma_regs __iomem *sgdma_regs; /* SGDAM reg BAR offset */
 	u32 bypass_offset;			/* Bypass mode BAR offset */
 
 	/* Engine state, configuration and flags */
@@ -613,6 +615,7 @@ struct xdma_dev {
 	int irq_line;		/* flag if irq allocated successfully */
 	int msi_enabled;	/* flag if msi was enabled for the device */
 	int msix_enabled;	/* flag if msi-x was enabled for the device */
+	int user_irq_requested;	/* flag if msi-x user irqs are requested */
 #if KERNEL_VERSION(4, 12, 0) > LINUX_VERSION_CODE
 	struct msix_entry entry[32];	/* msi-x vector/entry table */
 #endif
@@ -678,8 +681,8 @@ static inline void xdma_device_flag_clear(struct xdma_dev *xdev, unsigned int f)
 	spin_unlock_irqrestore(&xdev->lock, flags);
 }
 
-void write_register(u32 value, void *iomem);
-u32 read_register(void *iomem);
+void write_register(u32 value, void __iomem *iomem);
+u32 read_register(void __iomem *iomem);
 
 struct xdma_dev *xdev_find_by_pdev(struct pci_dev *pdev);
 

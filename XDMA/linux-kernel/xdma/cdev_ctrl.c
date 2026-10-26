@@ -31,6 +31,14 @@
 #define xlx_access_ok(X, Y, Z) access_ok(X, Y, Z)
 #endif
 
+/* length of the BAR as mapped by map_single_bar() (capped at INT_MAX) */
+static resource_size_t ctrl_bar_len(struct xdma_dev *xdev, int bar)
+{
+	resource_size_t len = pci_resource_len(xdev->pdev, bar);
+
+	return min_t(resource_size_t, len, INT_MAX);
+}
+
 /*
  * character device file operations for control bus (through control bridge)
  */
@@ -51,6 +59,10 @@ static ssize_t char_ctrl_read(struct file *fp, char __user *buf, size_t count,
 	/* only 32-bit aligned and 32-bit multiples */
 	if (*pos & 3)
 		return -EPROTO;
+	if (count < 4)
+		return -EINVAL;
+	if (*pos < 0 || (u64)*pos + 4 > ctrl_bar_len(xdev, xcdev->bar))
+		return -EINVAL;
 	/* first address is BAR base plus file position offset */
 	reg = xdev->bar[xcdev->bar] + *pos;
 	//w = read_register(reg);
@@ -59,7 +71,7 @@ static ssize_t char_ctrl_read(struct file *fp, char __user *buf, size_t count,
 			__func__, reg, (long)count, (int)*pos, w);
 	rv = copy_to_user(buf, &w, 4);
 	if (rv)
-		dbg_sg("Copy to userspace failed but continuing\n");
+		return -EFAULT;
 
 	*pos += 4;
 	return 4;
@@ -82,12 +94,16 @@ static ssize_t char_ctrl_write(struct file *file, const char __user *buf,
 	/* only 32-bit aligned and 32-bit multiples */
 	if (*pos & 3)
 		return -EPROTO;
+	if (count < 4)
+		return -EINVAL;
+	if (*pos < 0 || (u64)*pos + 4 > ctrl_bar_len(xdev, xcdev->bar))
+		return -EINVAL;
 
 	/* first address is BAR base plus file position offset */
 	reg = xdev->bar[xcdev->bar] + *pos;
 	rv = copy_from_user(&w, buf, 4);
 	if (rv)
-		pr_info("copy from user failed %d/4, but continuing.\n", rv);
+		return -EFAULT;
 
 	dbg_sg("%s(0x%08x @%p, count=%ld, pos=%d)\n",
 			__func__, w, reg, (long)count, (int)*pos);
@@ -105,7 +121,7 @@ static long version_ioctl(struct xdma_cdev *xcdev, void __user *arg)
 
 	rv = copy_from_user((void *)&obj, arg, sizeof(struct xdma_ioc_info));
 	if (rv) {
-		pr_info("copy from user failed %d/%ld.\n",
+		pr_info("copy from user failed %d/%zu.\n",
 			rv, sizeof(struct xdma_ioc_info));
 		return -EFAULT;
 	}
@@ -206,6 +222,9 @@ int bridge_mmap(struct file *file, struct vm_area_struct *vma)
 	xdev = xcdev->xdev;
 
 	off = vma->vm_pgoff << PAGE_SHIFT;
+	/* the offset must lie within the BAR */
+	if (off >= pci_resource_len(xdev->pdev, xcdev->bar))
+		return -EINVAL;
 	/* BAR physical address */
 	phys = pci_resource_start(xdev->pdev, xcdev->bar) + off;
 	vsize = vma->vm_end - vma->vm_start;

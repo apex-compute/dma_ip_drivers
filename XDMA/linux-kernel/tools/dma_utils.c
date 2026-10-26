@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
@@ -30,11 +31,12 @@ int verbose = 0;
 uint64_t getopt_integer(char *optarg)
 {
 	int rc;
-	uint64_t value;
+	uint64_t value = 0;
 
-	rc = sscanf(optarg, "0x%lx", &value);
+	/* SCN*64: "%lx" does not match uint64_t on 32-bit hosts */
+	rc = sscanf(optarg, "0x%" SCNx64, &value);
 	if (rc <= 0)
-		rc = sscanf(optarg, "%lu", &value);
+		rc = sscanf(optarg, "%" SCNu64, &value);
 	//printf("sscanf() = %d, value = 0x%lx\n", rc, value);
 
 	return value;

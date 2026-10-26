@@ -30,6 +30,8 @@
 #define XDMA_MINOR_BASE (0)
 #define XDMA_MINOR_COUNT (255)
 
+extern struct kmem_cache *cdev_cache;
+
 void xdma_cdev_cleanup(void);
 int xdma_cdev_init(void);
 

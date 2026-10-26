@@ -33,6 +33,14 @@
 #include "cdev_sgdma.h"
 #include "xdma_thread.h"
 
+/* kernels before 3.19 only have ACCESS_ONCE() */
+#ifndef READ_ONCE
+#define READ_ONCE(x)		ACCESS_ONCE(x)
+#endif
+#ifndef WRITE_ONCE
+#define WRITE_ONCE(x, val)	(ACCESS_ONCE(x) = (val))
+#endif
+
 
 /* Module Parameters */
 static unsigned int poll_mode;
@@ -193,7 +201,7 @@ static inline int debug_check_dev_hndl(const char *fname, struct pci_dev *pdev,
 
 #ifdef __LIBXDMA_DEBUG__
 /* SECTION: Function definitions */
-inline void __write_register(const char *fn, u32 value, void *iomem,
+inline void __write_register(const char *fn, u32 value, void __iomem *iomem,
 			     unsigned long off)
 {
 	pr_err("%s: w reg 0x%lx(0x%p), 0x%x.\n", fn, off, iomem, value);
@@ -204,7 +212,7 @@ inline void __write_register(const char *fn, u32 value, void *iomem,
 #define write_register(v, mem, off) iowrite32(v, mem)
 #endif
 
-inline u32 read_register(void *iomem)
+inline u32 read_register(void __iomem *iomem)
 {
 	return ioread32(iomem);
 }
@@ -216,13 +224,13 @@ static inline u32 build_u32(u32 hi, u32 lo)
 
 static inline u64 build_u64(u64 hi, u64 lo)
 {
-	return ((hi & 0xFFFFFFFULL) << 32) | (lo & 0xFFFFFFFFULL);
+	return ((hi & 0xFFFFFFFFULL) << 32) | (lo & 0xFFFFFFFFULL);
 }
 
 static void check_nonzero_interrupt_status(struct xdma_dev *xdev)
 {
-	struct interrupt_regs *reg =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *reg =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 	u32 w;
 
@@ -258,8 +266,8 @@ static void check_nonzero_interrupt_status(struct xdma_dev *xdev)
 /* channel_interrupts_enable -- Enable interrupts we are interested in */
 static void channel_interrupts_enable(struct xdma_dev *xdev, u32 mask)
 {
-	struct interrupt_regs *reg =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *reg =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 
 	write_register(mask, &reg->channel_int_enable_w1s, XDMA_OFS_INT_CTRL);
@@ -268,8 +276,8 @@ static void channel_interrupts_enable(struct xdma_dev *xdev, u32 mask)
 /* channel_interrupts_disable -- Disable interrupts we not interested in */
 static void channel_interrupts_disable(struct xdma_dev *xdev, u32 mask)
 {
-	struct interrupt_regs *reg =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *reg =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 
 	write_register(mask, &reg->channel_int_enable_w1c, XDMA_OFS_INT_CTRL);
@@ -278,8 +286,8 @@ static void channel_interrupts_disable(struct xdma_dev *xdev, u32 mask)
 /* user_interrupts_enable -- Enable interrupts we are interested in */
 static void user_interrupts_enable(struct xdma_dev *xdev, u32 mask)
 {
-	struct interrupt_regs *reg =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *reg =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 
 	write_register(mask, &reg->user_int_enable_w1s, XDMA_OFS_INT_CTRL);
@@ -288,8 +296,8 @@ static void user_interrupts_enable(struct xdma_dev *xdev, u32 mask)
 /* user_interrupts_disable -- Disable interrupts we not interested in */
 static void user_interrupts_disable(struct xdma_dev *xdev, u32 mask)
 {
-	struct interrupt_regs *reg =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *reg =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 
 	write_register(mask, &reg->user_int_enable_w1c, XDMA_OFS_INT_CTRL);
@@ -298,8 +306,8 @@ static void user_interrupts_disable(struct xdma_dev *xdev, u32 mask)
 /* read_interrupts -- Print the interrupt controller status */
 static u32 read_interrupts(struct xdma_dev *xdev)
 {
-	struct interrupt_regs *reg =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *reg =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 	u32 lo;
 	u32 hi;
@@ -727,14 +735,14 @@ static struct xdma_transfer *engine_start(struct xdma_engine *engine)
 	engine->desc_dequeued = 0;
 
 	/* write lower 32-bit of bus address of transfer first descriptor */
-	w = cpu_to_le32(PCI_DMA_L(transfer->desc_bus));
+	w = PCI_DMA_L(transfer->desc_bus);
 	dbg_tfr("iowrite32(0x%08x to 0x%p) (first_desc_lo)\n", w,
 		(void *)&engine->sgdma_regs->first_desc_lo);
 	write_register(w, &engine->sgdma_regs->first_desc_lo,
 		       (unsigned long)(&engine->sgdma_regs->first_desc_lo) -
 			       (unsigned long)(&engine->sgdma_regs));
 	/* write upper 32-bit of bus address of transfer first descriptor */
-	w = cpu_to_le32(PCI_DMA_H(transfer->desc_bus));
+	w = PCI_DMA_H(transfer->desc_bus);
 	dbg_tfr("iowrite32(0x%08x to 0x%p) (first_desc_hi)\n", w,
 		(void *)&engine->sgdma_regs->first_desc_hi);
 	write_register(w, &engine->sgdma_regs->first_desc_hi,
@@ -742,7 +750,7 @@ static struct xdma_transfer *engine_start(struct xdma_engine *engine)
 			       (unsigned long)(&engine->sgdma_regs));
 
 	next_adj = xdma_get_next_adj(transfer->desc_adjacent,
-				     cpu_to_le32(PCI_DMA_L(transfer->desc_bus)));
+				     PCI_DMA_L(transfer->desc_bus));
 
 	dbg_tfr("iowrite32(0x%08x to 0x%p) (first_desc_adjacent)\n", next_adj,
 		(void *)&engine->sgdma_regs->first_desc_adjacent);
@@ -960,7 +968,7 @@ engine_service_final_transfer(struct xdma_engine *engine,
 			int max = *pdesc_completed;
 
 			for (i = 0; i < max; i++) {
-				if ((result[i].status & RX_STATUS_EOP) != 0) {
+				if ((le32_to_cpu(result[i].status) & RX_STATUS_EOP) != 0) {
 					transfer->flags |=
 						XFER_FLAG_ST_C2H_EOP_RCVED;
 					break;
@@ -1265,10 +1273,11 @@ static u32 engine_service_wb_monitor(struct xdma_engine *engine,
 
 	timeout = jiffies + (POLL_TIMEOUT_SECONDS * HZ);
 	while (expected_wb != 0) {
-		desc_wb = wb_data->completed_desc_count;
+		/* written by the device; force a fresh load every iteration */
+		desc_wb = le32_to_cpu(READ_ONCE(wb_data->completed_desc_count));
 
 		if (desc_wb)
-			wb_data->completed_desc_count = 0;
+			WRITE_ONCE(wb_data->completed_desc_count, 0);
 
 		if (desc_wb & WB_ERR_MASK)
 			break;
@@ -1371,12 +1380,12 @@ static irqreturn_t xdma_isr(int irq, void *dev_id)
 	u32 user_irq;
 	u32 mask;
 	struct xdma_dev *xdev;
-	struct interrupt_regs *irq_regs;
+	struct interrupt_regs __iomem *irq_regs;
 
 	dbg_irq("(irq=%d, dev 0x%p) <<<< ISR.\n", irq, dev_id);
 	if (!dev_id) {
 		pr_err("Invalid dev_id on irq line %d\n", irq);
-		return -IRQ_NONE;
+		return IRQ_NONE;
 	}
 	xdev = (struct xdma_dev *)dev_id;
 
@@ -1386,7 +1395,7 @@ static irqreturn_t xdma_isr(int irq, void *dev_id)
 		return IRQ_NONE;
 	}
 
-	irq_regs = (struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	irq_regs = (struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					     XDMA_OFS_INT_CTRL);
 
 	/* read channel interrupt requests */
@@ -1488,7 +1497,7 @@ static irqreturn_t xdma_channel_irq(int irq, void *dev_id)
 {
 	struct xdma_dev *xdev;
 	struct xdma_engine *engine;
-	struct interrupt_regs *irq_regs;
+	struct interrupt_regs __iomem *irq_regs;
 
 	dbg_irq("(irq=%d) <<<< INTERRUPT service ROUTINE\n", irq);
 	if (!dev_id) {
@@ -1505,7 +1514,7 @@ static irqreturn_t xdma_channel_irq(int irq, void *dev_id)
 		return IRQ_NONE;
 	}
 
-	irq_regs = (struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	irq_regs = (struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					     XDMA_OFS_INT_CTRL);
 
 	/* Disable the interrupt for this engine */
@@ -1593,10 +1602,10 @@ static int is_config_bar(struct xdma_dev *xdev, int idx)
 	u32 cfg_id = 0;
 	int flag = 0;
 	u32 mask = 0xffff0000; /* Compare only XDMA ID's not Version number */
-	struct interrupt_regs *irq_regs =
-		(struct interrupt_regs *)(xdev->bar[idx] + XDMA_OFS_INT_CTRL);
-	struct config_regs *cfg_regs =
-		(struct config_regs *)(xdev->bar[idx] + XDMA_OFS_CONFIG);
+	struct interrupt_regs __iomem *irq_regs =
+		(struct interrupt_regs __iomem *)(xdev->bar[idx] + XDMA_OFS_INT_CTRL);
+	struct config_regs __iomem *cfg_regs =
+		(struct config_regs __iomem *)(xdev->bar[idx] + XDMA_OFS_CONFIG);
 
 	irq_id = read_register(&irq_regs->identifier);
 	cfg_id = read_register(&cfg_regs->identifier);
@@ -1906,8 +1915,8 @@ static void pci_keep_intx_enabled(struct pci_dev *pdev)
 static void prog_irq_msix_user(struct xdma_dev *xdev, bool clear)
 {
 	/* user */
-	struct interrupt_regs *int_regs =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *int_regs =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 	u32 i = xdev->c2h_channel_max + xdev->h2c_channel_max;
 	u32 max = i + xdev->user_max;
@@ -1936,8 +1945,8 @@ static void prog_irq_msix_user(struct xdma_dev *xdev, bool clear)
 
 static void prog_irq_msix_channel(struct xdma_dev *xdev, bool clear)
 {
-	struct interrupt_regs *int_regs =
-		(struct interrupt_regs *)(xdev->bar[xdev->config_bar_idx] +
+	struct interrupt_regs __iomem *int_regs =
+		(struct interrupt_regs __iomem *)(xdev->bar[xdev->config_bar_idx] +
 					  XDMA_OFS_INT_CTRL);
 	u32 max = xdev->c2h_channel_max + xdev->h2c_channel_max;
 	u32 i;
@@ -1982,6 +1991,7 @@ static void irq_msix_channel_teardown(struct xdma_dev *xdev)
 		dbg_sg("Release IRQ#%d for engine %p\n", engine->msix_irq_line,
 		       engine);
 		free_irq(engine->msix_irq_line, engine);
+		engine->msix_irq_line = 0;
 	}
 
 	engine = xdev->engine_c2h;
@@ -1991,6 +2001,7 @@ static void irq_msix_channel_teardown(struct xdma_dev *xdev)
 		dbg_sg("Release IRQ#%d for engine %p\n", engine->msix_irq_line,
 		       engine);
 		free_irq(engine->msix_irq_line, engine);
+		engine->msix_irq_line = 0;
 	}
 }
 
@@ -2060,8 +2071,9 @@ static void irq_msix_user_teardown(struct xdma_dev *xdev)
 		return;
 	}
 
-	if (!xdev->msix_enabled)
+	if (!xdev->msix_enabled || !xdev->user_irq_requested)
 		return;
+	xdev->user_irq_requested = 0;
 
 	j = xdev->h2c_channel_max + xdev->c2h_channel_max;
 
@@ -2112,6 +2124,8 @@ static int irq_msix_user_setup(struct xdma_dev *xdev)
 #endif
 			free_irq(vector, &xdev->user_irq[i]);
 		}
+	} else {
+		xdev->user_irq_requested = 1;
 	}
 
 	return rv;
@@ -2121,12 +2135,14 @@ static int irq_msi_setup(struct xdma_dev *xdev, struct pci_dev *pdev)
 {
 	int rv;
 
-	xdev->irq_line = (int)pdev->irq;
 	rv = request_irq(pdev->irq, xdma_isr, 0, xdev->mod_name, xdev);
-	if (rv)
+	if (rv) {
 		dbg_init("Couldn't use IRQ#%d, %d\n", pdev->irq, rv);
-	else
+	} else {
+		/* only remember a line that irq_teardown() must free */
+		xdev->irq_line = (int)pdev->irq;
 		dbg_init("Using IRQ#%d with 0x%p\n", pdev->irq, xdev);
+	}
 
 	return rv;
 }
@@ -2135,7 +2151,7 @@ static int irq_legacy_setup(struct xdma_dev *xdev, struct pci_dev *pdev)
 {
 	u32 w;
 	u8 val;
-	void *reg;
+	void __iomem *reg;
 	int rv;
 
 	pci_read_config_byte(pdev, PCI_INTERRUPT_PIN, &val);
@@ -2161,13 +2177,14 @@ static int irq_legacy_setup(struct xdma_dev *xdev, struct pci_dev *pdev)
 		write_register(w, reg + 0x4, 0x20A4);
 	}
 
-	xdev->irq_line = (int)pdev->irq;
 	rv = request_irq(pdev->irq, xdma_isr, IRQF_SHARED, xdev->mod_name,
 			 xdev);
-	if (rv)
+	if (rv) {
 		dbg_init("Couldn't use IRQ#%d, %d\n", pdev->irq, rv);
-	else
+	} else {
+		xdev->irq_line = (int)pdev->irq;
 		dbg_init("Using IRQ#%d with 0x%p\n", pdev->irq, xdev);
+	}
 
 	return rv;
 }
@@ -2180,6 +2197,8 @@ static void irq_teardown(struct xdma_dev *xdev)
 	} else if (xdev->irq_line != -1) {
 		dbg_init("Releasing IRQ#%d\n", xdev->irq_line);
 		free_irq(xdev->irq_line, xdev);
+		/* offline and close both tear down; free only once */
+		xdev->irq_line = -1;
 	}
 }
 
@@ -2190,11 +2209,16 @@ static int irq_setup(struct xdma_dev *xdev, struct pci_dev *pdev)
 	if (xdev->msix_enabled) {
 		int rv = irq_msix_channel_setup(xdev);
 
-		if (rv)
+		/* release what was requested before vectors are freed */
+		if (rv) {
+			irq_msix_channel_teardown(xdev);
 			return rv;
+		}
 		rv = irq_msix_user_setup(xdev);
-		if (rv)
+		if (rv) {
+			irq_msix_channel_teardown(xdev);
 			return rv;
+		}
 		prog_irq_msix_channel(xdev, 0);
 		prog_irq_msix_user(xdev, 0);
 
@@ -2209,7 +2233,7 @@ static int irq_setup(struct xdma_dev *xdev, struct pci_dev *pdev)
 static void dump_desc(struct xdma_desc *desc_virt)
 {
 	int j;
-	u32 *p = (u32 *)desc_virt;
+	__le32 *p = (__le32 *)desc_virt;
 	static char *const field_name[] = { "magic|extra_adjacent|control",
 					    "bytes",
 					    "src_addr_lo",
@@ -2225,7 +2249,7 @@ static void dump_desc(struct xdma_desc *desc_virt)
 
 	for (j = 0; j < 8; j += 1) {
 		pr_info("0x%08lx/0x%02lx: 0x%08x 0x%08x %s\n", (uintptr_t)p,
-			(uintptr_t)p & 15, (int)*p, le32_to_cpu(*p),
+			(uintptr_t)p & 15, (__force u32)*p, le32_to_cpu(*p),
 			field_name[j]);
 		p++;
 	}
@@ -2428,14 +2452,18 @@ static int transfer_abort(struct xdma_engine *engine,
 
 	head = list_entry(engine->transfer_list.next, struct xdma_transfer,
 			  entry);
-	if (head == transfer)
-		list_del(engine->transfer_list.next);
-	else
-		pr_info("engine %s, transfer 0x%p NOT found, 0x%p.\n",
+	if (head != transfer)
+		pr_info("engine %s, transfer 0x%p NOT head, 0x%p.\n",
 			engine->name, transfer, head);
 
-	if (transfer->state == TRANSFER_STATE_SUBMITTED)
+	/*
+	 * A submitted transfer is on the queue, at the head or not; unlink
+	 * it either way, the caller frees it once this returns.
+	 */
+	if (transfer->state == TRANSFER_STATE_SUBMITTED) {
+		list_del(&transfer->entry);
 		transfer->state = TRANSFER_STATE_ABORTED;
+	}
 	return 0;
 }
 
@@ -2611,8 +2639,8 @@ static int engine_destroy(struct xdma_dev *xdev, struct xdma_engine *engine)
 	if (enable_st_c2h_credit && engine->streaming &&
 	    engine->dir == DMA_FROM_DEVICE) {
 		u32 reg_value = (0x1 << engine->channel) << 16;
-		struct sgdma_common_regs *reg =
-			(struct sgdma_common_regs
+		struct sgdma_common_regs __iomem *reg =
+			(struct sgdma_common_regs __iomem
 				 *)(xdev->bar[xdev->config_bar_idx] +
 				    (0x6 * TARGET_SPACING));
 		write_register(reg_value, &reg->credit_mode_enable_w1c, 0);
@@ -2638,7 +2666,7 @@ static int engine_destroy(struct xdma_dev *xdev, struct xdma_engine *engine)
 struct xdma_transfer *engine_cyclic_stop(struct xdma_engine *engine)
 {
 	int rv;
-	struct xdma_transfer *transfer = 0;
+	struct xdma_transfer *transfer = NULL;
 	int size = engine->xdma_perf->transfer_size;
 
 	/* transfers on queue? */
@@ -2707,11 +2735,11 @@ static int engine_writeback_setup(struct xdma_engine *engine)
 
 	dbg_init("Setting writeback location to 0x%llx for engine %p",
 		 engine->poll_mode_bus, engine);
-	w = cpu_to_le32(PCI_DMA_L(engine->poll_mode_bus));
+	w = PCI_DMA_L(engine->poll_mode_bus);
 	write_register(w, &engine->regs->poll_mode_wb_lo,
 		       (unsigned long)(&engine->regs->poll_mode_wb_lo) -
 			       (unsigned long)(&engine->regs));
-	w = cpu_to_le32(PCI_DMA_H(engine->poll_mode_bus));
+	w = PCI_DMA_H(engine->poll_mode_bus);
 	write_register(w, &engine->regs->poll_mode_wb_hi,
 		       (unsigned long)(&engine->regs->poll_mode_wb_hi) -
 			       (unsigned long)(&engine->regs));
@@ -2774,8 +2802,8 @@ static int engine_init_regs(struct xdma_engine *engine)
 	    engine->dir == DMA_FROM_DEVICE) {
 		struct xdma_dev *xdev = engine->xdev;
 		u32 reg_value = (0x1 << engine->channel) << 16;
-		struct sgdma_common_regs *reg =
-			(struct sgdma_common_regs
+		struct sgdma_common_regs __iomem *reg =
+			(struct sgdma_common_regs __iomem
 				 *)(xdev->bar[xdev->config_bar_idx] +
 				    (0x6 * TARGET_SPACING));
 
@@ -3029,7 +3057,7 @@ static int transfer_init(struct xdma_engine *engine,
 	/* fill in adjacent numbers */
 	for (i = 0; i < xfer->desc_num; i++) {
 		u32 next_adj = xdma_get_next_adj(xfer->desc_num - i - 1,
-						(xfer->desc_virt + i)->next_lo);
+				le32_to_cpu((xfer->desc_virt + i)->next_lo));
 
 		dbg_desc("set next adj at index %d to %u\n", i, next_adj);
 		xdma_desc_adjacent(xfer->desc_virt + i, next_adj);
@@ -3198,6 +3226,13 @@ ssize_t xdma_xfer_aperture(struct xdma_engine *engine, bool write, u64 ep_addr,
 		return -EINVAL;
 	}
 
+	/* an empty or wrapping window would never make progress */
+	if (!aperture || ep_addr_max < ep_addr) {
+		pr_info("%s invalid aperture 0x%x, ep 0x%llx.\n",
+			engine->name, aperture, ep_addr);
+		return -EINVAL;
+	}
+
 	if (!dma_mapped) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)
 		sgt->nents = pci_map_sg(xdev->pdev, sgt->sgl, sgt->orig_nents,
@@ -3269,7 +3304,7 @@ ssize_t xdma_xfer_aperture(struct xdma_engine *engine, bool write, u64 ep_addr,
 
 		/* build transfer */
 		sg = req->sg;
-		ep_addr = req->ep_addr + (req->offset & (aperture - 1));
+		ep_addr = req->ep_addr + (req->offset % aperture);
 		i = req->sg_idx;
 		
 		for (sg = req->sg; i < sg_max && desc_idx < desc_max;
@@ -3319,6 +3354,8 @@ ssize_t xdma_xfer_aperture(struct xdma_engine *engine, bool write, u64 ep_addr,
 		
 		req->sg_offset = sg_offset;
 		req->sg_idx = i;
+		/* resume the next chain at the matching sg entry */
+		req->sg = sg;
 
 		xfer->desc_adjacent = desc_cnt;
 		xfer->desc_num = desc_cnt;
@@ -3344,7 +3381,7 @@ ssize_t xdma_xfer_aperture(struct xdma_engine *engine, bool write, u64 ep_addr,
 		/* fill in adjacent numbers */
 		for (i = 0; i < desc_cnt; i++) {
 			u32 next_adj = xdma_get_next_adj(desc_cnt - i - 1,
-					(xfer->desc_virt + i)->next_lo);
+				le32_to_cpu((xfer->desc_virt + i)->next_lo));
 
 	                dbg_desc("set next adj at idx %d to %u\n", i, next_adj);
         	        xdma_desc_adjacent(xfer->desc_virt + i, next_adj);
@@ -3365,6 +3402,7 @@ ssize_t xdma_xfer_aperture(struct xdma_engine *engine, bool write, u64 ep_addr,
 
 		rv = transfer_queue(engine, xfer);
 		if (rv < 0) {
+			engine->desc_used -= xfer->desc_num;
 			mutex_unlock(&engine->desc_lock);
 			pr_info("unable to submit %s, %d.\n", engine->name, rv);
 			goto unmap_sgl;
@@ -3583,6 +3621,7 @@ ssize_t xdma_xfer_submit(void *dev_hndl, int channel, bool write, u64 ep_addr,
 
 		rv = transfer_queue(engine, xfer);
 		if (rv < 0) {
+			engine->desc_used -= xfer->desc_num;
 			mutex_unlock(&engine->desc_lock);
 			pr_info("unable to submit %s, %d.\n", engine->name, rv);
 			goto unmap_sgl;
@@ -3616,7 +3655,7 @@ ssize_t xdma_xfer_submit(void *dev_hndl, int channel, bool write, u64 ep_addr,
 				struct xdma_result *result = xfer->res_virt;
 
 				for (i = 0; i < xfer->desc_cmpl; i++)
-					done += result[i].length;
+					done += le32_to_cpu(result[i].length);
 
 				/* finish the whole request */
 				if (engine->eop_flush && (xfer->flags & XFER_FLAG_ST_C2H_EOP_RCVED))
@@ -3761,7 +3800,7 @@ ssize_t xdma_xfer_completion(void *cb_hndl, void *dev_hndl, int channel,
 			if (engine->streaming &&
 				engine->dir == DMA_FROM_DEVICE) {
 				for (i = 0; i < xfer->desc_num; i++)
-					done += result[i].length;
+					done += le32_to_cpu(result[i].length);
 			} else
 				done += xfer->len;
 
@@ -3908,6 +3947,18 @@ ssize_t xdma_xfer_submit_nowait(void *cb_hndl, void *dev_hndl, int channel,
 		goto unmap_sgl;
 	}
 
+	/*
+	 * Nothing waits between the transfers queued here, so the request
+	 * must fit the descriptor ring; it then needs at most two transfers
+	 * (one wrap around the ring), which is all req->tfer[] can hold.
+	 */
+	if (req->sw_desc_cnt > engine->desc_max) {
+		pr_info("%s, %u descriptors exceed the %u for nowait.\n",
+			engine->name, req->sw_desc_cnt, engine->desc_max);
+		rv = -EINVAL;
+		goto unmap_sgl;
+	}
+
 	//used when doing completion.
 	req->cb = cb;
 	cb->req = req;
@@ -3938,10 +3989,7 @@ ssize_t xdma_xfer_submit_nowait(void *cb_hndl, void *dev_hndl, int channel,
 				sgt->nents = 0;
 			}
 
-			/* Transfer failed return BUSY */
-			if (cb->io_done)
-				cb->io_done((unsigned long)cb, -EBUSY);
-
+			/* the caller sees the error; io_done is not called */
 			goto rel_req;
 		}
 
@@ -3967,6 +4015,7 @@ ssize_t xdma_xfer_submit_nowait(void *cb_hndl, void *dev_hndl, int channel,
 
 		rv = transfer_queue(engine, xfer);
 		if (rv < 0) {
+			engine->desc_used -= xfer->desc_num;
 			pr_info("unable to submit %s, %d.\n", engine->name, rv);
 			goto unmap_sgl;
 		}
@@ -4109,14 +4158,15 @@ int xdma_performance_submit(struct xdma_dev *xdev, struct xdma_engine *engine)
 	return 0;
 
 err_dma_desc:
-	if (free_desc && engine->desc)
+	/* never drop the engine's own pre-allocated descriptor ring */
+	if (free_desc && engine->desc) {
 		dma_free_coherent(&xdev->pdev->dev,
 				num_desc_in_a_loop * sizeof(struct xdma_desc),
 				engine->desc, engine->desc_bus);
-	engine->desc = NULL;
+		engine->desc = NULL;
+	}
 err_engine_desc:
-	if (transfer)
-		list_del(&transfer->entry);
+	/* the transfer was never queued, so it is on no list */
 	kfree(transfer);
 	transfer = NULL;
 err_engine_transfer:
@@ -4268,7 +4318,7 @@ static int set_dma_mask(struct pci_dev *pdev)
 	return 0;
 }
 
-static int get_engine_channel_id(struct engine_regs *regs)
+static int get_engine_channel_id(struct engine_regs __iomem *regs)
 {
 	int value;
 
@@ -4282,7 +4332,7 @@ static int get_engine_channel_id(struct engine_regs *regs)
 	return (value & 0x00000f00U) >> 8;
 }
 
-static int get_engine_id(struct engine_regs *regs)
+static int get_engine_id(struct engine_regs __iomem *regs)
 {
 	int value;
 
@@ -4333,7 +4383,7 @@ static void remove_engines(struct xdma_dev *xdev)
 static int probe_for_engine(struct xdma_dev *xdev, enum dma_data_direction dir,
 			    int channel)
 {
-	struct engine_regs *regs;
+	struct engine_regs __iomem *regs;
 	int offset = channel * CHANNEL_SPACING;
 	u32 engine_id;
 	u32 engine_id_expected;
@@ -4492,7 +4542,7 @@ void *xdma_device_open(const char *mname, struct pci_dev *pdev, int *user_max,
 
 	rv = map_bars(xdev, pdev);
 	if (rv)
-		goto err_map;
+		goto err_mask;	/* unmap whatever map_bars() did map */
 
 	rv = set_dma_mask(pdev);
 	if (rv)
@@ -4535,7 +4585,6 @@ err_engines:
 	remove_engines(xdev);
 err_mask:
 	unmap_bars(xdev, pdev);
-err_map:
 	if (xdev->got_regions)
 		pci_release_regions(pdev);
 err_regions:
@@ -4662,6 +4711,12 @@ void xdma_device_online(struct pci_dev *pdev, void *dev_hndl)
 	if (debug_check_dev_hndl(__func__, pdev, dev_hndl) < 0)
 		return;
 
+	/* IRQs of an online device are still requested; keep them */
+	if (!xdma_device_flag_check(xdev, XDEV_FLAG_OFFLINE)) {
+		pr_info("xdev 0x%p, already online.\n", xdev);
+		return;
+	}
+
 	pr_info("pdev 0x%p, xdev 0x%p.\n", pdev, xdev);
 
 	for (i = 0; i < xdev->h2c_channel_max; i++) {
@@ -4782,7 +4837,12 @@ int engine_addrmode_set(struct xdma_engine *engine, unsigned long arg)
 	rv = get_user(dst, (int __user *)arg);
 
 	if (rv == 0) {
+		unsigned long flags;
+
+		/* non_incr_addr shares a byte with engine->running */
+		spin_lock_irqsave(&engine->lock, flags);
 		engine->non_incr_addr = !!dst;
+		spin_unlock_irqrestore(&engine->lock, flags);
 		if (engine->non_incr_addr)
 			write_register(
 				w, &engine->regs->control_w1s,

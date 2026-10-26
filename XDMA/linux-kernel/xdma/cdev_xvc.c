@@ -117,11 +117,20 @@ static long xvc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return -ENOIOCTLCMD;
 	}
 
+	/* the XVC registers sit at a fixed offset; the BAR may be smaller */
+	if (xcdev->base + XVC_BAR_CTRL_REG + 4 >
+	    pci_resource_len(xdev->pdev, xcdev->bar)) {
+		pr_info("XVC regs at 0x%lx beyond BAR %d.\n", xcdev->base,
+			xcdev->bar);
+		return -ENODEV;
+	}
+
 	rv = copy_from_user((void *)&xvc_obj, (void __user *)arg,
 				sizeof(struct xvc_ioc));
 	/* anything not copied ? */
 	if (rv) {
 		pr_info("copy_from_user xvc_obj failed: %d.\n", rv);
+		rv = -EFAULT;
 		goto cleanup;
 	}
 
@@ -134,9 +143,10 @@ static long xvc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	}
 
 	total_bits = xvc_obj.length;
-	total_bytes = (total_bits + 7) >> 3;
+	/* round up without overflowing for lengths close to UINT_MAX */
+	total_bytes = (total_bits >> 3) + ((total_bits & 7) ? 1 : 0);
 
-	buffer = kmalloc(total_bytes * 3, GFP_KERNEL);
+	buffer = kmalloc_array(3, total_bytes, GFP_KERNEL | __GFP_NOWARN);
 	if (!buffer) {
 		pr_info("OOM %u, op 0x%x, len %u bits, %u bytes.\n",
 			3 * total_bytes, opcode, total_bits, total_bytes);
@@ -152,6 +162,7 @@ static long xvc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			total_bytes);
 	if (rv) {
 		pr_info("copy tmfs_buf failed: %d/%u.\n", rv, total_bytes);
+		rv = -EFAULT;
 		goto cleanup;
 	}
 	rv = copy_from_user((void *)tdi_buf,
@@ -159,6 +170,7 @@ static long xvc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			total_bytes);
 	if (rv) {
 		pr_info("copy tdi_buf failed: %d/%u.\n", rv, total_bytes);
+		rv = -EFAULT;
 		goto cleanup;
 	}
 
@@ -176,9 +188,10 @@ static long xvc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		bits_left -= 32) {
 		unsigned int bytes = bits >> 3;
 		unsigned int shift_bytes = 4;
-		u32 tms_store = 0;
-		u32 tdi_store = 0;
-		u32 tdo_store = 0;
+		__le32 tms_store = 0;
+		__le32 tdi_store = 0;
+		__le32 tdo_store;
+		u32 tdo_bits = 0;
 
 		if (bits_left < 32) {
 			/* set number of bits to shift out */
@@ -190,15 +203,28 @@ static long xvc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		memcpy(&tdi_store, tdi_buf + bytes, shift_bytes);
 
 		/* Shift data out and copy to output buffer */
-		rv = xvc_shift_bits(iobase, tms_store, tdi_store, &tdo_store);
+		/*
+		 * The buffers are LSB-first bit streams; bit n of the stream
+		 * is bit n of the little-endian word on any host.
+		 */
+		rv = xvc_shift_bits(iobase, le32_to_cpu(tms_store),
+				    le32_to_cpu(tdi_store), &tdo_bits);
 		if (rv < 0)
 			break;
+
+		tdo_store = cpu_to_le32(tdo_bits);
 
 		memcpy(tdo_buf + bytes, &tdo_store, shift_bytes);
 	}
 
+#if HAS_MMIOWB
+	mmiowb();
+#endif
+	spin_unlock(&xcdev->lock);
+
+	/* copy_to_user() may fault and sleep, so not under the spinlock */
 	if (rv < 0)
-		goto unlock;
+		goto cleanup;
 
 	/* if testing bar access swap tdi and tdo bufferes to "loopback" */
 	if (opcode == 0x2) {
@@ -209,14 +235,10 @@ static long xvc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	}
 
 	rv = copy_to_user(xvc_obj.tdo_buf, (const void *)tdo_buf, total_bytes);
-	if (rv)
+	if (rv) {
 		pr_info("copy back tdo_buf failed: %d/%u.\n", rv, total_bytes);
-
-unlock:
-#if HAS_MMIOWB
-	mmiowb();
-#endif
-	spin_unlock(&xcdev->lock);
+		rv = -EFAULT;
+	}
 
 cleanup:
 	kfree(buffer);
