@@ -1,51 +1,21 @@
-# Xilinx DMA IP Reference drivers
+# Xilinx XDMA Linux Driver
 
-## Xilinx QDMA
+Linux kernel driver and tools for the Xilinx/AMD DMA/Bridge Subsystem for
+PCI Express (XDMA) IP, forked from
+[Xilinx/dma_ip_drivers](https://github.com/Xilinx/dma_ip_drivers). The other
+drivers from that repository (QDMA, XVSEC, MDB5) are not included.
 
-The Xilinx PCI Express Multi Queue DMA (QDMA) IP provides high-performance direct memory access (DMA) via PCI Express. The PCIe QDMA can be implemented in UltraScale+ devices.
+* [`XDMA/linux-kernel`](XDMA/linux-kernel) — kernel driver (`xdma/`),
+  userspace tools (`tools/`) and test scripts (`tests/`). See
+  [`XDMA/linux-kernel/readme.txt`](XDMA/linux-kernel/readme.txt).
 
-Both the linux kernel driver and the DPDK driver can be run on a PCI Express root port host PC to interact with the QDMA endpoint IP via PCI Express.
+## Changes from upstream
 
-### Getting Started
-
-* [QDMA Reference Drivers Comprehensive documentation](https://xilinx.github.io/dma_ip_drivers/)
-
-## Xilinx-VSEC (XVSEC)
-
-Xilinx-VSEC (XVSEC) are Xilinx supported VSECs. The XVSEC Driver helps creating and deploying designs that may include the Xilinx VSEC PCIe Features.
-
-VSEC (Vendor Specific Extended Capability) is a feature of PCIe.
-
-The VSEC itself is implemented in the PCIe extended capability register in the FPGA hardware (as either soft or hard IP). The drivers and SW are created to interface with and use this hardware implemented feature.
-
-The XVSEC driver currently include the MCAP VSEC, but will be expanded to include the XVC VSEC and NULL VSEC.
-
-### Getting Started
-
-* [XVSEC Linux Kernel Reference Driver Comprehensive documentation](https://xilinx.github.io/dma_ip_drivers/)
-
-## AMD MDB5
- 
-The AMD MDB5 DMA is an integrated block for multiple DMA/bridge for PCIe v5.0,
-enabling high-performance data transfer capabilities to a DMA controller.
- 
-This repo contains:
- 
-- **`client-driver`** uses the DMAEngine API and creates character
-  devices for userspace access, supporting 8 read and 8 write channels
-- **`client-apps`** provides userspace applications that interface with those character devices
- 
-The client-driver integrates with the standard Linux DMAEngine framework via the
-in-kernel `dw-edma` controller, supporting 8 read and 8 write channels.
- 
-### Getting Started
-* [MDB5 DMA Linux Driver Comprehensive Documentation](https://xilinx.github.io/dma_ip_drivers/master/MDB5/linux-kernel/software_docs/index.html)
-* [Migrating from QDMA to MDB5](https://xilinx.github.io/dma_ip_drivers/master/MDB5/linux-kernel/migration_docs/toc.html)
-
-### Support
-
-Refer to Xilinx PCIe Forum for any queries/issues/support required w.r.t Xilinx's DMA IP Reference Drivers
-
-Note: Issues are disabled in github for these drivers. All the queries shall be redirected through Xilinx PCIe Forum link given below.
-
-* [Xilinx PCIe Forum](https://forums.xilinx.com/t5/PCIe-and-CPM/bd-p/PCIe)
+* Big-endian host support. The FPGA side is unchanged: descriptors, C2H
+  write-back results and poll-mode write-back stay little-endian in host
+  memory, and the driver converts at every access. `/dev/xdma*_user`
+  read/write carry CPU-native 32-bit register values; H2C/C2H data is
+  copied byte for byte.
+* Builds on current kernels (tested on Linux 7.0).
+* Fixes for BAR bounds checks, locking, IRQ teardown, aperture transfers,
+  aio, and error-path leaks in the driver and tools.
