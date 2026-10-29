@@ -922,6 +922,14 @@ static int engine_err_handle(struct xdma_engine *engine,
 	return rv;
 }
 
+static bool engine_status_error(struct xdma_engine *engine)
+{
+	return ((engine->dir == DMA_FROM_DEVICE) &&
+		(engine->status & XDMA_STAT_C2H_ERR_MASK)) ||
+	       ((engine->dir == DMA_TO_DEVICE) &&
+		(engine->status & XDMA_STAT_H2C_ERR_MASK));
+}
+
 static struct xdma_transfer *
 engine_service_final_transfer(struct xdma_engine *engine,
 			      struct xdma_transfer *transfer,
@@ -944,10 +952,7 @@ engine_service_final_transfer(struct xdma_engine *engine,
 		return NULL;
 	}
 
-	if (((engine->dir == DMA_FROM_DEVICE) &&
-	     (engine->status & XDMA_STAT_C2H_ERR_MASK)) ||
-	    ((engine->dir == DMA_TO_DEVICE) &&
-	     (engine->status & XDMA_STAT_H2C_ERR_MASK))) {
+	if (engine_status_error(engine)) {
 		pr_info("engine %s, status error 0x%x.\n", engine->name,
 			engine->status);
 		engine_status_dump(engine);
@@ -1165,7 +1170,13 @@ static int engine_service(struct xdma_engine *engine, int desc_writeback)
 		engine->name, desc_writeback, desc_count, err_flag,
 		engine->desc_dequeued);
 
-	if (!desc_count)
+	/*
+	 * An error on the first descriptor, such as a failed descriptor
+	 * fetch, completes no descriptors. Fail the transfer now: the status
+	 * read above cleared the error, so a timeout would report nothing.
+	 */
+	if (!desc_count && (list_empty(&engine->transfer_list) ||
+			    !engine_status_error(engine)))
 		goto done;
 
 	/* transfers on queue? */
